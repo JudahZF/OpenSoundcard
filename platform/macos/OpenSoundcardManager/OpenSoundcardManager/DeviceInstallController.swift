@@ -45,7 +45,7 @@ struct DeviceInstallState {
   }
 
   var versionMatches: Bool {
-    installedPlugins.contains { $0.version == expectedVersion }
+    pluginInstalled && installedPlugins.allSatisfy { $0.version == expectedVersion }
   }
 
   var pluginStatusText: String {
@@ -79,7 +79,9 @@ struct DeviceInstallState {
       return "Not installed"
     }
 
-    return versionMatches ? "Matches app \(expectedVersion)" : "Mismatch with app \(expectedVersion)"
+    return versionMatches
+      ? "All installed plug-ins match app \(expectedVersion)"
+      : "Mismatch or unknown version against app \(expectedVersion)"
   }
 
   var restartRecommendation: String? {

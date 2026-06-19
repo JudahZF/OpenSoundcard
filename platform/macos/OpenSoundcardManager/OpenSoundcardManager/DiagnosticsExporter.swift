@@ -118,6 +118,7 @@ enum DiagnosticsExporter {
     }
     lines.append("Expected manager version: \(state.expectedVersion)")
     lines.append("Version match: \(state.versionMatches ? "yes" : "no")")
+    lines.append("Version status: \(state.versionMatchText)")
 
     if let recommendation = state.restartRecommendation {
       lines.append("Restart suggestion: \(recommendation)")
