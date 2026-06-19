@@ -86,7 +86,7 @@ final class StatusModel: ObservableObject {
     switch captureSnapshot.state {
     case .capturing:
       .good
-    case .starting:
+    case .starting, .stopping:
       .warning
     case .error:
       .error
@@ -113,11 +113,22 @@ final class StatusModel: ObservableObject {
   }
 
   var stageboxProbeButtonTitle: String {
-    stageboxController.snapshot.state.isActive ? "Stop Stagebox Probe" : "Start Stagebox Probe"
+    switch stageboxController.snapshot.state {
+    case .stopping:
+      "Stopping Stagebox Probe"
+    case .starting, .transmitting:
+      "Stop Stagebox Probe"
+    case .idle, .finished, .error:
+      "Start Stagebox Probe"
+    }
   }
 
   var stageboxProbeSystemImage: String {
     stageboxController.snapshot.state.isActive ? "stop.fill" : "dot.radiowaves.left.and.right"
+  }
+
+  var isInterfaceSelectionDisabled: Bool {
+    isRunning || stageboxController.snapshot.state.isActive
   }
 
   var packetsPerSecondText: String {
@@ -187,6 +198,11 @@ final class StatusModel: ObservableObject {
   }
 
   func selectInterface(_ interfaceID: String) {
+    guard !isInterfaceSelectionDisabled else {
+      lastProbeError = "Stop capture and stagebox probe before changing interface"
+      return
+    }
+
     selectedInterfaceID = interfaceID
     selectedInterface = interfaceID.isEmpty ? "No interface selected" : interfaceID
   }
@@ -195,6 +211,10 @@ final class StatusModel: ObservableObject {
     switch captureController.listInterfaces() {
     case let .success(interfaces):
       captureInterfaces = interfaces
+      guard !isInterfaceSelectionDisabled else {
+        return
+      }
+
       if selectedInterfaceID.isEmpty, let first = interfaces.first {
         selectInterface(first.id)
       } else if !selectedInterfaceID.isEmpty,
@@ -244,6 +264,10 @@ final class StatusModel: ObservableObject {
 
     if !isRunning {
       startCapture()
+    } else if captureSnapshot.interfaceName != selectedInterfaceID {
+      lastProbeError = "Capture is active on \(captureSnapshot.interfaceName ?? "another interface")"
+      stageboxIdentification = "Error"
+      return
     }
 
     let variant = selectedStageboxVariant
@@ -342,6 +366,9 @@ final class StatusModel: ObservableObject {
       next.probeEndsAt = nil
     case .starting, .transmitting:
       next.state = .probing
+      next.probeEndsAt = probe.endsAt
+    case .stopping:
+      next.state = .stopping
       next.probeEndsAt = probe.endsAt
     case .finished:
       next.state = next.responseCount > 0 ? .responding : .noResponse

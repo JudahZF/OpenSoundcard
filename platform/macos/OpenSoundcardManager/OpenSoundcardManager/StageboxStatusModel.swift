@@ -4,6 +4,7 @@ struct StageboxStatusModel {
   enum ProbeState: Equatable {
     case disabled
     case probing
+    case stopping
     case responding
     case noResponse
     case error(String)
@@ -14,6 +15,8 @@ struct StageboxStatusModel {
         "Disabled"
       case .probing:
         "Probing"
+      case .stopping:
+        "Stopping"
       case .responding:
         "Response detected"
       case .noResponse:

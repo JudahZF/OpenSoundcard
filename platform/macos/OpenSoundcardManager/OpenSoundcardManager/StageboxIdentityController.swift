@@ -5,11 +5,12 @@ struct StageboxProbeSnapshot {
     case idle
     case starting
     case transmitting
+    case stopping
     case finished
     case error(String)
 
     var isActive: Bool {
-      self == .starting || self == .transmitting
+      self == .starting || self == .transmitting || self == .stopping
     }
   }
 
@@ -25,7 +26,8 @@ struct StageboxProbeSnapshot {
 final class StageboxIdentityController {
   private let queue = DispatchQueue(label: "org.opensoundcard.manager.stagebox-identity")
   private var current = StageboxProbeSnapshot()
-  private var shouldStop = false
+  private var activeRunID: UUID?
+  private var cancelledRunIDs: Set<UUID> = []
 
   var snapshot: StageboxProbeSnapshot {
     queue.sync {
@@ -40,7 +42,9 @@ final class StageboxIdentityController {
         return
       }
 
-      self.shouldStop = false
+      let runID = UUID()
+      self.activeRunID = runID
+      self.cancelledRunIDs.remove(runID)
       let now = Date()
       self.current = StageboxProbeSnapshot(
         state: .starting,
@@ -52,6 +56,7 @@ final class StageboxIdentityController {
 
       DispatchQueue.global(qos: .userInitiated).async {
         self.transmitLoop(
+          runID: runID,
           interfaceName: interfaceName,
           variant: variant,
           duration: boundedDuration
@@ -62,57 +67,95 @@ final class StageboxIdentityController {
 
   func stop() {
     queue.async {
-      self.shouldStop = true
-      if self.current.state.isActive {
-        self.current.state = .finished
+      guard let runID = self.activeRunID, self.current.state.isActive else {
+        return
       }
+
+      self.cancelledRunIDs.insert(runID)
+      self.current.state = .stopping
     }
   }
 
   private func transmitLoop(
+    runID: UUID,
     interfaceName: String,
     variant: StageboxIdentityVariant,
     duration: TimeInterval
   ) {
     do {
-      let pcap = try PcapLibrary.shared.openLive(interfaceName: interfaceName)
-      defer {
-        try? PcapLibrary.shared.close(pcap)
-      }
-
       let frame = try Self.identityFrame(for: variant)
+      let pcap = try PcapLibrary.shared.openLive(interfaceName: interfaceName)
       let deadline = Date().addingTimeInterval(duration)
       let sleepMicros = max(1, UInt32((1_000_000 / max(variant.packetRate, 1)).rounded()))
 
-      queue.async {
-        self.current.state = .transmitting
+      setRunTransmitting(runID)
+
+      do {
+        while Date() < deadline, !stopRequested(runID) {
+          try PcapLibrary.shared.inject(handle: pcap, frame: frame)
+          queue.async {
+            guard self.activeRunID == runID else {
+              return
+            }
+
+            self.current.transmittedFrames += 1
+          }
+          usleep(sleepMicros)
+        }
+      } catch {
+        try? PcapLibrary.shared.close(pcap)
+        failRun(runID, error: error)
+        return
       }
 
-      while Date() < deadline, !stopRequested() {
-        try PcapLibrary.shared.inject(handle: pcap, frame: frame)
-        queue.async {
-          self.current.transmittedFrames += 1
-        }
-        usleep(sleepMicros)
-      }
-
-      queue.async {
-        if case .error = self.current.state {
-          return
-        }
-        self.current.state = .finished
-      }
+      try? PcapLibrary.shared.close(pcap)
+      finishRun(runID)
     } catch {
-      queue.async {
-        self.current.state = .error(error.localizedDescription)
-        self.current.lastError = error.localizedDescription
-      }
+      failRun(runID, error: error)
     }
   }
 
-  private func stopRequested() -> Bool {
+  private func stopRequested(_ runID: UUID) -> Bool {
     queue.sync {
-      shouldStop
+      activeRunID != runID || cancelledRunIDs.contains(runID)
+    }
+  }
+
+  private func setRunTransmitting(_ runID: UUID) {
+    queue.async {
+      guard self.activeRunID == runID, !self.cancelledRunIDs.contains(runID) else {
+        return
+      }
+
+      self.current.state = .transmitting
+    }
+  }
+
+  private func finishRun(_ runID: UUID) {
+    queue.async {
+      guard self.activeRunID == runID else {
+        return
+      }
+
+      self.cancelledRunIDs.remove(runID)
+      self.activeRunID = nil
+      if case .error = self.current.state {
+        return
+      }
+      self.current.state = .finished
+    }
+  }
+
+  private func failRun(_ runID: UUID, error: Error) {
+    queue.async {
+      guard self.activeRunID == runID else {
+        return
+      }
+
+      self.cancelledRunIDs.remove(runID)
+      self.activeRunID = nil
+      self.current.state = .error(error.localizedDescription)
+      self.current.lastError = error.localizedDescription
     }
   }
 

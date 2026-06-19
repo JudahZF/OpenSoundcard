@@ -24,6 +24,7 @@ struct CaptureControllerSnapshot {
     case stopped
     case starting
     case capturing
+    case stopping
     case error(String)
 
     var displayName: String {
@@ -34,6 +35,8 @@ struct CaptureControllerSnapshot {
         "Starting"
       case .capturing:
         "Capturing"
+      case .stopping:
+        "Stopping"
       case .error:
         "Error"
       }
@@ -52,7 +55,7 @@ struct CaptureControllerSnapshot {
   var startedAt: Date?
 
   var isCapturing: Bool {
-    state == .capturing || state == .starting
+    state == .capturing || state == .starting || state == .stopping
   }
 
   var packetsPerSecond: Double {
@@ -77,7 +80,8 @@ struct CaptureControllerSnapshot {
 final class CaptureController {
   private let queue = DispatchQueue(label: "org.opensoundcard.manager.capture")
   private var current = CaptureControllerSnapshot()
-  private var shouldStop = false
+  private var activeRunID: UUID?
+  private var cancelledRunIDs: Set<UUID> = []
 
   var snapshot: CaptureControllerSnapshot {
     queue.sync {
@@ -97,7 +101,9 @@ final class CaptureController {
         return
       }
 
-      self.shouldStop = false
+      let runID = UUID()
+      self.activeRunID = runID
+      self.cancelledRunIDs.remove(runID)
       self.current = CaptureControllerSnapshot(
         state: .starting,
         interfaceName: interfaceName,
@@ -105,64 +111,104 @@ final class CaptureController {
       )
 
       DispatchQueue.global(qos: .userInitiated).async {
-        self.captureLoop(interfaceName: interfaceName)
+        self.captureLoop(runID: runID, interfaceName: interfaceName)
       }
     }
   }
 
   func stop() {
     queue.async {
-      self.shouldStop = true
-      if self.current.isCapturing {
-        self.current.state = .stopped
+      guard let runID = self.activeRunID, self.current.isCapturing else {
+        return
       }
+
+      self.cancelledRunIDs.insert(runID)
+      self.current.state = .stopping
     }
   }
 
-  private func captureLoop(interfaceName: String) {
+  private func captureLoop(runID: UUID, interfaceName: String) {
     do {
       let pcap = try PcapLibrary.shared.openLive(interfaceName: interfaceName)
-      queue.async {
-        self.current.state = .capturing
-        self.current.lastError = nil
-      }
+      setRunCapturing(runID)
 
-      while !stopRequested() {
-        switch try PcapLibrary.shared.nextPacket(handle: pcap) {
-        case let .packet(data):
-          observePacket(data)
-        case .timeout:
-          continue
-        case .finished:
-          break
+      do {
+        captureLoop: while !stopRequested(runID) {
+          switch try PcapLibrary.shared.nextPacket(handle: pcap) {
+          case let .packet(data):
+            observePacket(data, runID: runID)
+          case .timeout:
+            continue
+          case .finished:
+            break captureLoop
+          }
         }
+      } catch {
+        try? PcapLibrary.shared.close(pcap)
+        failRun(runID, error: error)
+        return
       }
 
       try? PcapLibrary.shared.close(pcap)
-      queue.async {
-        if case .error = self.current.state {
-          return
-        }
-        self.current.state = .stopped
-      }
+      finishRun(runID)
     } catch {
-      queue.async {
-        self.current.state = .error(error.localizedDescription)
-        self.current.lastError = error.localizedDescription
-      }
+      failRun(runID, error: error)
     }
   }
 
-  private func stopRequested() -> Bool {
+  private func stopRequested(_ runID: UUID) -> Bool {
     queue.sync {
-      shouldStop
+      activeRunID != runID || cancelledRunIDs.contains(runID)
     }
   }
 
-  private func observePacket(_ data: Data) {
+  private func setRunCapturing(_ runID: UUID) {
+    queue.async {
+      guard self.activeRunID == runID, !self.cancelledRunIDs.contains(runID) else {
+        return
+      }
+
+      self.current.state = .capturing
+      self.current.lastError = nil
+    }
+  }
+
+  private func finishRun(_ runID: UUID) {
+    queue.async {
+      guard self.activeRunID == runID else {
+        return
+      }
+
+      self.cancelledRunIDs.remove(runID)
+      self.activeRunID = nil
+      if case .error = self.current.state {
+        return
+      }
+      self.current.state = .stopped
+    }
+  }
+
+  private func failRun(_ runID: UUID, error: Error) {
+    queue.async {
+      guard self.activeRunID == runID else {
+        return
+      }
+
+      self.cancelledRunIDs.remove(runID)
+      self.activeRunID = nil
+      self.current.state = .error(error.localizedDescription)
+      self.current.lastError = error.localizedDescription
+    }
+  }
+
+  private func observePacket(_ data: Data, runID: UUID) {
     let decoded = Self.isDecodedGigaAceFrame(data)
     let response = Self.consoleResponse(from: data)
     queue.async {
+      guard self.activeRunID == runID else {
+        return
+      }
+
       self.current.packetCount += 1
       if decoded {
         self.current.decodedFrameCount += 1

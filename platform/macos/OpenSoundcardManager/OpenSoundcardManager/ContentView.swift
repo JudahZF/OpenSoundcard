@@ -110,6 +110,7 @@ private struct CaptureSection: View {
         }
         .labelsHidden()
         .frame(maxWidth: .infinity)
+        .disabled(statusModel.isInterfaceSelectionDisabled)
 
         Button {
           statusModel.refreshCaptureInterfaces()
@@ -117,6 +118,7 @@ private struct CaptureSection: View {
           Image(systemName: "arrow.clockwise")
         }
         .help("Refresh interfaces")
+        .disabled(statusModel.isInterfaceSelectionDisabled)
       }
       StatusRow(label: "State", value: statusModel.captureState)
       StatusRow(label: "Packets/sec", value: statusModel.packetsPerSecondText)
