@@ -1,0 +1,3 @@
+[submodule "vendor/gigace"]
+	path = vendor/gigace
+	url = https://github.com/JudahZF/GigaAceSoundcard.git
