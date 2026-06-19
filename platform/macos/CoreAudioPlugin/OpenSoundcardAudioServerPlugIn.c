@@ -207,8 +207,12 @@ static OSStatus OpenSoundcardDriverAddDeviceClient(
     AudioServerPlugInDriverRef driver, AudioObjectID device_object_id,
     const AudioServerPlugInClientInfo *client_info) {
   (void)driver;
-  (void)device_object_id;
   (void)client_info;
+
+  if (device_object_id != OPENSOUNDCARD_DEVICE_OBJECT_ID) {
+    return kAudioHardwareBadDeviceError;
+  }
+
   return kAudioHardwareNoError;
 }
 
@@ -216,8 +220,12 @@ static OSStatus OpenSoundcardDriverRemoveDeviceClient(
     AudioServerPlugInDriverRef driver, AudioObjectID device_object_id,
     const AudioServerPlugInClientInfo *client_info) {
   (void)driver;
-  (void)device_object_id;
   (void)client_info;
+
+  if (device_object_id != OPENSOUNDCARD_DEVICE_OBJECT_ID) {
+    return kAudioHardwareBadDeviceError;
+  }
+
   return kAudioHardwareNoError;
 }
 

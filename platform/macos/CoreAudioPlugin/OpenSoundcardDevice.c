@@ -43,6 +43,13 @@ static bool OpenSoundcardIsInputScope(AudioObjectPropertyScope scope) {
          scope == kAudioObjectPropertyScopeWildcard;
 }
 
+static bool
+OpenSoundcardScopeExposesInputStream(AudioObjectPropertyScope scope) {
+  return scope == kAudioObjectPropertyScopeGlobal ||
+         scope == kAudioObjectPropertyScopeInput ||
+         scope == kAudioObjectPropertyScopeWildcard;
+}
+
 static bool OpenSoundcardIsMainElement(AudioObjectPropertyElement element) {
   return element == kAudioObjectPropertyElementMain ||
          element == kAudioObjectPropertyElementWildcard;
@@ -168,7 +175,7 @@ static OSStatus OpenSoundcardCopyStreamList(UInt32 data_size,
     return kAudioHardwareBadPropertySizeError;
   }
 
-  if (OpenSoundcardIsInputScope(scope)) {
+  if (OpenSoundcardScopeExposesInputStream(scope)) {
     const AudioObjectID streams[] = {OPENSOUNDCARD_INPUT_STREAM_OBJECT_ID};
     return OpenSoundcardCopyFixedProperty(data_size, out_data_size, out_data,
                                           streams, sizeof(streams));
@@ -321,7 +328,6 @@ OpenSoundcardDeviceHasProperty(AudioObjectID object_id,
     case kAudioObjectPropertyName:
     case kAudioObjectPropertyModelName:
     case kAudioObjectPropertyManufacturer:
-    case kAudioObjectPropertyOwnedObjects:
     case kAudioDevicePropertyDeviceUID:
     case kAudioDevicePropertyModelUID:
     case kAudioDevicePropertyTransportType:
@@ -332,7 +338,6 @@ OpenSoundcardDeviceHasProperty(AudioObjectID object_id,
     case kAudioDevicePropertyDeviceCanBeDefaultDevice:
     case kAudioDevicePropertyDeviceCanBeDefaultSystemDevice:
     case kAudioDevicePropertyLatency:
-    case kAudioDevicePropertyStreams:
     case kAudioObjectPropertyControlList:
     case kAudioDevicePropertySafetyOffset:
     case kAudioDevicePropertyNominalSampleRate:
@@ -344,6 +349,12 @@ OpenSoundcardDeviceHasProperty(AudioObjectID object_id,
     case kAudioDevicePropertyClockAlgorithm:
     case kAudioDevicePropertyClockIsStable:
       return true;
+    case kAudioObjectPropertyOwnedObjects:
+      return OpenSoundcardIsGlobalScope(address->mScope);
+    case kAudioDevicePropertyStreams:
+      return OpenSoundcardIsGlobalScope(address->mScope) ||
+             address->mScope == kAudioObjectPropertyScopeInput ||
+             address->mScope == kAudioObjectPropertyScopeOutput;
     case kAudioDevicePropertyPreferredChannelsForStereo:
       return OpenSoundcardIsInputScope(address->mScope);
     default:
@@ -424,15 +435,21 @@ OSStatus OpenSoundcardDeviceGetPropertyDataSize(
     *out_data_size = sizeof(CFStringRef);
     return kAudioHardwareNoError;
 
-  case kAudioObjectPropertyOwnedObjects:
   case kAudioPlugInPropertyDeviceList:
   case kAudioDevicePropertyRelatedDevices:
     *out_data_size = sizeof(AudioObjectID);
     return kAudioHardwareNoError;
 
+  case kAudioObjectPropertyOwnedObjects:
+    *out_data_size = object_id == OPENSOUNDCARD_INPUT_STREAM_OBJECT_ID
+                         ? 0
+                         : sizeof(AudioObjectID);
+    return kAudioHardwareNoError;
+
   case kAudioDevicePropertyStreams:
-    *out_data_size =
-        OpenSoundcardIsInputScope(address->mScope) ? sizeof(AudioObjectID) : 0;
+    *out_data_size = OpenSoundcardScopeExposesInputStream(address->mScope)
+                         ? sizeof(AudioObjectID)
+                         : 0;
     return kAudioHardwareNoError;
 
   case kAudioObjectPropertyControlList:
