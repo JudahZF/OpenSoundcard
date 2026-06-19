@@ -77,17 +77,29 @@ if [[ "$INSTALL_DIR" == /Library/* ]]; then
 	echo "Removing from the system HAL directory. macOS usually requires sudo here."
 fi
 
-if [[ ! -e "$DEST_BUNDLE" ]]; then
+removed_bundle=0
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+	run rm -rf "$DEST_BUNDLE"
+	echo "Would remove: $DEST_BUNDLE"
+	removed_bundle=1
+elif [[ ! -e "$DEST_BUNDLE" ]]; then
 	echo "No installed bundle found at: $DEST_BUNDLE"
 else
 	run_with_optional_sudo rm -rf "$DEST_BUNDLE"
 	echo "Removed: $DEST_BUNDLE"
+	removed_bundle=1
+fi
+
+if [[ "$removed_bundle" -eq 1 ]]; then
+	if [[ "$DRY_RUN" -eq 1 ]]; then
+		"$SCRIPT_DIR/restart-coreaudiod.sh" --dry-run
+	else
+		"$SCRIPT_DIR/restart-coreaudiod.sh"
+	fi
 fi
 
 cat <<EOF
-
-Restart CoreAudio:
-  $SCRIPT_DIR/restart-coreaudiod.sh
 
 Verify removal:
   system_profiler SPAudioDataType | grep -A8 -i OpenSoundcard

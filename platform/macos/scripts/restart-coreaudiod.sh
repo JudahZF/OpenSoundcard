@@ -33,14 +33,14 @@ while [[ $# -gt 0 ]]; do
 	shift
 done
 
-if [[ "$(uname -s)" != "Darwin" ]]; then
-	echo "error: coreaudiod can only be restarted on macOS." >&2
-	exit 1
-fi
-
 if [[ "$DRY_RUN" -eq 1 ]]; then
 	echo "dry-run: sudo launchctl kickstart -k system/com.apple.audio.coreaudiod"
 	exit 0
+fi
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+	echo "error: coreaudiod can only be restarted on macOS." >&2
+	exit 1
 fi
 
 if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then

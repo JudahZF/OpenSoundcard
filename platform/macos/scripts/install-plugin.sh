@@ -96,15 +96,14 @@ run_with_optional_sudo mv "$TEMP_BUNDLE" "$DEST_BUNDLE"
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
 	install_status="Would install"
+	"$SCRIPT_DIR/restart-coreaudiod.sh" --dry-run
 else
 	install_status="Installed"
+	"$SCRIPT_DIR/restart-coreaudiod.sh"
 fi
 
 cat <<EOF
 $install_status: $DEST_BUNDLE
-
-Restart CoreAudio:
-  $SCRIPT_DIR/restart-coreaudiod.sh
 
 Verify:
   system_profiler SPAudioDataType | grep -A8 -i OpenSoundcard
