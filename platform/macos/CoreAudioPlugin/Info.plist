@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>OpenSoundcardAudioServerPlugIn</string>
+  <key>CFBundleIdentifier</key>
+  <string>org.opensoundcard.coreaudio.driver</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>OpenSoundcard CoreAudio HAL Driver</string>
+  <key>CFBundlePackageType</key>
+  <string>BNDL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.0</string>
+  <key>CFBundleSupportedPlatforms</key>
+  <array>
+    <string>MacOSX</string>
+  </array>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>CFPlugInFactories</key>
+  <dict>
+    <key>7C2C2F59-2B32-42AC-A610-DFD28B3D64EF</key>
+    <string>AudioServerPlugInFactory</string>
+  </dict>
+  <key>CFPlugInTypes</key>
+  <dict>
+    <key>443ABAB8-E7B3-491A-B985-BEB9187030DB</key>
+    <array>
+      <string>7C2C2F59-2B32-42AC-A610-DFD28B3D64EF</string>
+    </array>
+  </dict>
+  <key>AudioServerPlugIn_LoadingConditions</key>
+  <dict>
+    <key>IOService Matching</key>
+    <array>
+      <dict>
+        <key>IOProviderClass</key>
+        <string>IOResources</string>
+        <key>IOResourceMatch</key>
+        <string>IOKit</string>
+      </dict>
+    </array>
+  </dict>
+</dict>
+</plist>
