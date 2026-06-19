@@ -93,7 +93,31 @@ private struct CaptureSection: View {
 
   var body: some View {
     PanelSection(title: "Capture") {
-      StatusRow(label: "Interface", value: statusModel.selectedInterface)
+      HStack(spacing: 8) {
+        Picker(
+          "Interface",
+          selection: Binding(
+            get: { statusModel.selectedInterfaceID },
+            set: { statusModel.selectInterface($0) }
+          )
+        ) {
+          if statusModel.captureInterfaces.isEmpty {
+            Text("No interfaces").tag("")
+          }
+          ForEach(statusModel.captureInterfaces) { captureInterface in
+            Text(captureInterface.displayName).tag(captureInterface.id)
+          }
+        }
+        .labelsHidden()
+        .frame(maxWidth: .infinity)
+
+        Button {
+          statusModel.refreshCaptureInterfaces()
+        } label: {
+          Image(systemName: "arrow.clockwise")
+        }
+        .help("Refresh interfaces")
+      }
       StatusRow(label: "State", value: statusModel.captureState)
       StatusRow(label: "Packets/sec", value: statusModel.packetsPerSecondText)
       StatusRow(label: "Decoded frames/sec", value: statusModel.decodedFramesPerSecondText)
@@ -109,8 +133,27 @@ private struct StageboxSection: View {
 
   var body: some View {
     PanelSection(title: "Stagebox / Console") {
+      Picker("Variant", selection: $statusModel.selectedStageboxVariantID) {
+        ForEach(StageboxIdentityVariant.all) { variant in
+          Text(variant.displayName).tag(variant.id)
+        }
+      }
+      Stepper(
+        "Duration: \(Int(statusModel.probeDurationSeconds))s",
+        value: $statusModel.probeDurationSeconds,
+        in: 1 ... 30,
+        step: 1
+      )
+      ControlButton(
+        title: statusModel.stageboxProbeButtonTitle,
+        systemImage: statusModel.stageboxProbeSystemImage
+      ) {
+        statusModel.stageboxProbe()
+      }
       StatusRow(label: "Identification", value: statusModel.stageboxIdentification)
       StatusRow(label: "Active variant", value: statusModel.activeVariant)
+      StatusRow(label: "Probe remaining", value: statusModel.probeRemainingText)
+      StatusRow(label: "Transmitted frames", value: statusModel.transmittedFramesText)
       StatusRow(label: "Console response frames", value: statusModel.consoleResponseFramesText)
       StatusRow(label: "Last console MAC", value: statusModel.lastConsoleMAC)
       StatusRow(label: "Allen & Heath OUI detected", value: statusModel.allenHeathOUIDetectedText)
@@ -153,10 +196,6 @@ private struct ControlsSection: View {
 
         ControlButton(title: statusModel.demoToneButtonTitle, systemImage: "waveform") {
           statusModel.toggleDemoTone()
-        }
-
-        ControlButton(title: "Stagebox Probe", systemImage: "dot.radiowaves.left.and.right") {
-          statusModel.stageboxProbe()
         }
 
         ControlButton(

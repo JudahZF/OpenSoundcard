@@ -6,6 +6,8 @@ import Foundation
 final class StatusModel: ObservableObject {
   @Published private(set) var pluginInstalled = false
   @Published private(set) var deviceLoaded = false
+  @Published private(set) var captureInterfaces: [CaptureInterface] = []
+  @Published private(set) var selectedInterfaceID = ""
   @Published private(set) var selectedInterface = "No interface selected"
   @Published private(set) var stageboxIdentification = "Disabled"
   @Published private(set) var activeVariant = "None"
@@ -19,8 +21,14 @@ final class StatusModel: ObservableObject {
   @Published private(set) var packetsPerSecond: Double = 0
   @Published private(set) var decodedFramesPerSecond: Double = 0
   @Published private(set) var demoToneEnabled = false
+  @Published var selectedStageboxVariantID: UInt8 = 0
+  @Published var probeDurationSeconds: Double = 10
 
   private let halBridge = OpenSoundcardHALBridge()
+  private let captureController = CaptureController()
+  private let stageboxController = StageboxIdentityController()
+  private var captureSnapshot = CaptureControllerSnapshot()
+  private var stageboxStatus = StageboxStatusModel()
   private var pollTimer: Timer?
   private var previousPacketCount: UInt64 = 0
   private var previousDecodedFrameCount: UInt64 = 0
@@ -28,6 +36,7 @@ final class StatusModel: ObservableObject {
 
   init() {
     refreshInstallState()
+    refreshCaptureInterfaces()
     poll()
     pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
       Task { @MainActor in
@@ -57,7 +66,7 @@ final class StatusModel: ObservableObject {
   }
 
   var sampleRateText: String {
-    status.sampleRate > 0 ? "\(Int(status.sampleRate / 1_000)) kHz" : "48 kHz"
+    status.sampleRate > 0 ? "\(Int(status.sampleRate / 1000)) kHz" : "48 kHz"
   }
 
   var channelsText: String {
@@ -65,14 +74,19 @@ final class StatusModel: ObservableObject {
   }
 
   var captureState: String {
-    return status.state.displayName
+    switch captureSnapshot.state {
+    case let .error(message):
+      return message.isEmpty ? "Error" : "Error"
+    default:
+      return captureSnapshot.state.displayName
+    }
   }
 
   var captureTone: StatusTone {
-    switch status.state {
-    case .running:
+    switch captureSnapshot.state {
+    case .capturing:
       .good
-    case .starting, .underrun:
+    case .starting:
       .warning
     case .error:
       .error
@@ -82,7 +96,7 @@ final class StatusModel: ObservableObject {
   }
 
   var isRunning: Bool {
-    status.state == .running || status.state == .underrun
+    captureSnapshot.isCapturing
   }
 
   var captureButtonTitle: String {
@@ -91,6 +105,19 @@ final class StatusModel: ObservableObject {
 
   var demoToneButtonTitle: String {
     demoToneEnabled ? "Stop Demo Tone" : "Demo Tone"
+  }
+
+  var selectedStageboxVariant: StageboxIdentityVariant {
+    StageboxIdentityVariant.all.first { $0.id == selectedStageboxVariantID }
+      ?? StageboxIdentityVariant.all[0]
+  }
+
+  var stageboxProbeButtonTitle: String {
+    stageboxController.snapshot.state.isActive ? "Stop Stagebox Probe" : "Start Stagebox Probe"
+  }
+
+  var stageboxProbeSystemImage: String {
+    stageboxController.snapshot.state.isActive ? "stop.fill" : "dot.radiowaves.left.and.right"
   }
 
   var packetsPerSecondText: String {
@@ -111,6 +138,14 @@ final class StatusModel: ObservableObject {
 
   var lastResponseAgeText: String {
     lastResponseAge
+  }
+
+  var probeRemainingText: String {
+    stageboxStatus.remainingText
+  }
+
+  var transmittedFramesText: String {
+    "\(stageboxStatus.transmittedFrames)"
   }
 
   var fillEstimateText: String {
@@ -141,23 +176,52 @@ final class StatusModel: ObservableObject {
   }
 
   var lastErrorText: String {
-    status.lastErrorCode == 0 ? "None" : "\(status.lastErrorCode)"
+    if let captureError = captureSnapshot.lastError {
+      return captureError
+    }
+    return status.lastErrorCode == 0 ? "None" : "\(status.lastErrorCode)"
   }
 
   func toggleCapture() {
     isRunning ? stopCapture() : startCapture()
   }
 
-  func startCapture() {
-    selectedInterface = deviceLoaded ? "OpenSoundcard GigaACE" : "No interface selected"
-    if !deviceLoaded {
-      lastProbeError = "CoreAudio device unavailable"
+  func selectInterface(_ interfaceID: String) {
+    selectedInterfaceID = interfaceID
+    selectedInterface = interfaceID.isEmpty ? "No interface selected" : interfaceID
+  }
+
+  func refreshCaptureInterfaces() {
+    switch captureController.listInterfaces() {
+    case let .success(interfaces):
+      captureInterfaces = interfaces
+      if selectedInterfaceID.isEmpty, let first = interfaces.first {
+        selectInterface(first.id)
+      } else if !selectedInterfaceID.isEmpty,
+                !interfaces.contains(where: { $0.id == selectedInterfaceID })
+      {
+        selectInterface(interfaces.first?.id ?? "")
+      }
+    case let .failure(error):
+      captureInterfaces = []
+      selectedInterfaceID = ""
+      selectedInterface = "No interface selected"
+      lastProbeError = error.localizedDescription
     }
+  }
+
+  func startCapture() {
+    guard !selectedInterfaceID.isEmpty else {
+      lastProbeError = "Select a capture interface first"
+      return
+    }
+    captureController.start(interfaceName: selectedInterfaceID)
+    selectedInterface = selectedInterfaceID
     poll()
   }
 
   func stopCapture() {
-    stopDemoTone()
+    captureController.stop()
     poll()
   }
 
@@ -166,10 +230,36 @@ final class StatusModel: ObservableObject {
   }
 
   func stageboxProbe() {
-    stageboxIdentification = "Probing"
-    lastProbeError = "Probe transport not connected"
-    safetyWarning = "Do not connect unknown network equipment to stagebox ports"
-    stageboxIdentification = "No response"
+    if stageboxController.snapshot.state.isActive {
+      stageboxController.stop()
+      poll()
+      return
+    }
+
+    guard !selectedInterfaceID.isEmpty else {
+      lastProbeError = "Select a capture interface first"
+      stageboxIdentification = "Error"
+      return
+    }
+
+    if !isRunning {
+      startCapture()
+    }
+
+    let variant = selectedStageboxVariant
+    stageboxStatus = StageboxStatusModel(
+      state: .probing,
+      activeVariant: variant,
+      lastError: nil,
+      probeEndsAt: Date().addingTimeInterval(probeDurationSeconds)
+    )
+    safetyWarning = StageboxStatusModel.safetyWarning
+    stageboxController.start(
+      interfaceName: selectedInterfaceID,
+      variant: variant,
+      duration: probeDurationSeconds
+    )
+    poll()
   }
 
   func showInstallInstructions() {
@@ -204,7 +294,6 @@ final class StatusModel: ObservableObject {
   private func startDemoTone() {
     demoToneEnabled = true
     halBridge.setDemoToneEnabled(true)
-    selectedInterface = deviceLoaded ? "OpenSoundcard GigaACE demo tone" : "No interface selected"
     poll()
   }
 
@@ -217,32 +306,65 @@ final class StatusModel: ObservableObject {
   private func poll() {
     refreshInstallState()
 
+    captureSnapshot = captureController.snapshot
     status = halBridge.status() ?? .empty
+    syncStageboxStatus()
 
     updateRates()
   }
 
   private func updateRates() {
-    let now = Date()
-    let elapsed = now.timeIntervalSince(previousRateDate)
-    guard elapsed > 0 else {
-      return
+    packetsPerSecond = captureSnapshot.packetsPerSecond
+    decodedFramesPerSecond = captureSnapshot.decodedFramesPerSecond
+    previousPacketCount = captureSnapshot.packetCount
+    previousDecodedFrameCount = captureSnapshot.decodedFrameCount
+    previousRateDate = Date()
+  }
+
+  private func syncStageboxStatus() {
+    let probe = stageboxController.snapshot
+    var next = stageboxStatus
+    next.responseCount = captureSnapshot.consoleResponseCount
+    next.lastConsoleMAC = captureSnapshot.lastConsoleMAC
+    next.allenHeathOUIDetected = captureSnapshot.allenHeathOUIDetected
+    next.lastResponseDate = captureSnapshot.lastConsoleResponseDate
+    next.transmittedFrames = probe.transmittedFrames
+
+    if let variant = probe.variant {
+      next.activeVariant = variant
+    } else if next.activeVariant == nil {
+      next.activeVariant = selectedStageboxVariant
     }
 
-    let packetDelta =
-      status.packetCount >= previousPacketCount
-      ? status.packetCount - previousPacketCount
-      : 0
-    let frameDelta =
-      status.decodedFrameCount >= previousDecodedFrameCount
-      ? status.decodedFrameCount - previousDecodedFrameCount
-      : 0
+    switch probe.state {
+    case .idle:
+      next.state = next.responseCount > 0 ? .responding : .disabled
+      next.probeEndsAt = nil
+    case .starting, .transmitting:
+      next.state = .probing
+      next.probeEndsAt = probe.endsAt
+    case .finished:
+      next.state = next.responseCount > 0 ? .responding : .noResponse
+      next.probeEndsAt = nil
+    case let .error(message):
+      next.state = .error(message)
+      next.lastError = message
+      next.probeEndsAt = nil
+    }
 
-    packetsPerSecond = Double(packetDelta) / elapsed
-    decodedFramesPerSecond = Double(frameDelta) / elapsed
-    previousPacketCount = status.packetCount
-    previousDecodedFrameCount = status.decodedFrameCount
-    previousRateDate = now
+    if let captureError = captureSnapshot.lastError {
+      next.lastError = captureError
+    }
+
+    stageboxStatus = next
+    stageboxIdentification = stageboxStatus.state.displayName
+    activeVariant = stageboxStatus.activeVariant?.displayName ?? "None"
+    consoleResponseFrames = stageboxStatus.responseCount
+    lastConsoleMAC = stageboxStatus.lastConsoleMAC ?? "None"
+    allenHeathOUIDetected = stageboxStatus.allenHeathOUIDetected
+    lastResponseAge = stageboxStatus.responseAgeText
+    lastProbeError = stageboxStatus.lastError ?? "None"
+    safetyWarning = StageboxStatusModel.safetyWarning
   }
 
   private func refreshInstallState() {
@@ -254,9 +376,6 @@ final class StatusModel: ObservableObject {
     pluginInstalled =
       fileManager.fileExists(atPath: systemPlugin) || fileManager.fileExists(atPath: userPlugin)
     deviceLoaded = isOpenSoundcardDeviceLoaded()
-    if deviceLoaded {
-      selectedInterface = "OpenSoundcard GigaACE"
-    }
   }
 
   private func isOpenSoundcardDeviceLoaded() -> Bool {
@@ -367,9 +486,8 @@ final class StatusModel: ObservableObject {
 
   private func repositoryRoot() -> URL {
     var probeURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-    for _ in 0..<8 {
-      if FileManager.default.fileExists(atPath: probeURL.appendingPathComponent("Cargo.toml").path)
-      {
+    for _ in 0 ..< 8 {
+      if FileManager.default.fileExists(atPath: probeURL.appendingPathComponent("Cargo.toml").path) {
         return probeURL
       }
       probeURL.deleteLastPathComponent()
@@ -379,13 +497,13 @@ final class StatusModel: ObservableObject {
   }
 }
 
-extension EngineStatus {
-  fileprivate static var empty: EngineStatus {
+private extension EngineStatus {
+  static var empty: EngineStatus {
     EngineStatus(
       state: .stopped,
-      sampleRate: 48_000,
+      sampleRate: 48000,
       channelCount: 64,
-      capacityFrames: 48_000,
+      capacityFrames: 48000,
       readIndex: 0,
       writeIndex: 0,
       packetCount: 0,

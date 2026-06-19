@@ -11,6 +11,9 @@
 		7B1000022D10000000100001 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B1000112D10000000100001 /* ContentView.swift */; };
 		7B1000032D10000000100001 /* StatusModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B1000122D10000000100001 /* StatusModel.swift */; };
 		7B1000042D10000000100001 /* OpenSoundcardFFI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B1000132D10000000100001 /* OpenSoundcardFFI.swift */; };
+		7B1000052D10000000100001 /* CaptureController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B1000142D10000000100001 /* CaptureController.swift */; };
+		7B1000062D10000000100001 /* StageboxStatusModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B1000152D10000000100001 /* StageboxStatusModel.swift */; };
+		7B1000072D10000000100001 /* StageboxIdentityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B1000162D10000000100001 /* StageboxIdentityController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -18,6 +21,9 @@
 		7B1000112D10000000100001 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		7B1000122D10000000100001 /* StatusModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusModel.swift; sourceTree = "<group>"; };
 		7B1000132D10000000100001 /* OpenSoundcardFFI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSoundcardFFI.swift; sourceTree = "<group>"; };
+		7B1000142D10000000100001 /* CaptureController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureController.swift; sourceTree = "<group>"; };
+		7B1000152D10000000100001 /* StageboxStatusModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StageboxStatusModel.swift; sourceTree = "<group>"; };
+		7B1000162D10000000100001 /* StageboxIdentityController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StageboxIdentityController.swift; sourceTree = "<group>"; };
 		7B1000202D10000000100001 /* OpenSoundcardManager.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenSoundcardManager.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -47,6 +53,9 @@
 				7B1000112D10000000100001 /* ContentView.swift */,
 				7B1000122D10000000100001 /* StatusModel.swift */,
 				7B1000132D10000000100001 /* OpenSoundcardFFI.swift */,
+				7B1000142D10000000100001 /* CaptureController.swift */,
+				7B1000152D10000000100001 /* StageboxStatusModel.swift */,
+				7B1000162D10000000100001 /* StageboxIdentityController.swift */,
 			);
 			path = OpenSoundcardManager;
 			sourceTree = "<group>";
@@ -131,6 +140,9 @@
 				7B1000022D10000000100001 /* ContentView.swift in Sources */,
 				7B1000032D10000000100001 /* StatusModel.swift in Sources */,
 				7B1000042D10000000100001 /* OpenSoundcardFFI.swift in Sources */,
+				7B1000052D10000000100001 /* CaptureController.swift in Sources */,
+				7B1000062D10000000100001 /* StageboxStatusModel.swift in Sources */,
+				7B1000072D10000000100001 /* StageboxIdentityController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
