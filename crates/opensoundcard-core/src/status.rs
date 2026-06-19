@@ -1,18 +1,13 @@
 /// Stream lifecycle state shared by the CoreAudio plug-in and manager.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum OscStreamState {
+    #[default]
     Stopped = 0,
     Starting = 1,
     Running = 2,
     Underrun = 3,
     Error = 4,
-}
-
-impl Default for OscStreamState {
-    fn default() -> Self {
-        Self::Stopped
-    }
 }
 
 /// Point-in-time stream status for FFI consumers.
@@ -47,5 +42,39 @@ impl Default for OscStatusSnapshot {
             overrun_count: 0,
             last_error_code: 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem::{align_of, offset_of, size_of};
+
+    #[test]
+    fn stream_state_has_c_abi_layout() {
+        assert_eq!(size_of::<OscStreamState>(), 4);
+        assert_eq!(align_of::<OscStreamState>(), 4);
+        assert_eq!(OscStreamState::Stopped as u32, 0);
+        assert_eq!(OscStreamState::Starting as u32, 1);
+        assert_eq!(OscStreamState::Running as u32, 2);
+        assert_eq!(OscStreamState::Underrun as u32, 3);
+        assert_eq!(OscStreamState::Error as u32, 4);
+    }
+
+    #[test]
+    fn status_snapshot_has_c_abi_layout() {
+        assert_eq!(size_of::<OscStatusSnapshot>(), 80);
+        assert_eq!(align_of::<OscStatusSnapshot>(), 8);
+        assert_eq!(offset_of!(OscStatusSnapshot, state), 0);
+        assert_eq!(offset_of!(OscStatusSnapshot, sample_rate), 8);
+        assert_eq!(offset_of!(OscStatusSnapshot, channel_count), 16);
+        assert_eq!(offset_of!(OscStatusSnapshot, capacity_frames), 20);
+        assert_eq!(offset_of!(OscStatusSnapshot, read_index), 24);
+        assert_eq!(offset_of!(OscStatusSnapshot, write_index), 32);
+        assert_eq!(offset_of!(OscStatusSnapshot, packet_count), 40);
+        assert_eq!(offset_of!(OscStatusSnapshot, decoded_frame_count), 48);
+        assert_eq!(offset_of!(OscStatusSnapshot, underrun_count), 56);
+        assert_eq!(offset_of!(OscStatusSnapshot, overrun_count), 64);
+        assert_eq!(offset_of!(OscStatusSnapshot, last_error_code), 72);
     }
 }
