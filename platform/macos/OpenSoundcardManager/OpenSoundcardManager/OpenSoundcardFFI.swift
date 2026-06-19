@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 
 struct EngineStatus {
@@ -38,7 +37,7 @@ enum OscEngineState: Int32 {
   }
 }
 
-private struct OscStatusSnapshot {
+struct OscStatusSnapshot {
   var state: Int32 = 0
   var sampleRate: Double = 0
   var channelCount: UInt32 = 0
@@ -65,198 +64,57 @@ private struct OscStatusSnapshot {
       && MemoryLayout<OscStatusSnapshot>.offset(of: \.overrunCount) == 64
       && MemoryLayout<OscStatusSnapshot>.offset(of: \.lastErrorCode) == 72
   }
+
+  var engineStatus: EngineStatus {
+    EngineStatus(
+      state: OscEngineState(rawValue: state) ?? .error,
+      sampleRate: sampleRate,
+      channelCount: channelCount,
+      capacityFrames: capacityFrames,
+      readIndex: readIndex,
+      writeIndex: writeIndex,
+      packetCount: packetCount,
+      decodedFrameCount: decodedFrameCount,
+      underrunCount: underrunCount,
+      overrunCount: overrunCount,
+      lastErrorCode: lastErrorCode
+    )
+  }
 }
 
-final class OpenSoundcardEngine {
-  private let library: OpenSoundcardLibrary
-  private var engine: UnsafeMutableRawPointer?
-  private var tonePhase: Double = 0
+final class OpenSoundcardHALBridge {
+  private let controlURL = URL(fileURLWithPath: "/tmp/opensoundcard_manager_control")
+  private let statusURL = URL(fileURLWithPath: "/tmp/opensoundcard_manager_status")
 
-  let availabilityMessage: String
-
-  init?() {
-    guard OscStatusSnapshot.hasExpectedLayout else {
-      return nil
-    }
-
-    guard let loadedLibrary = OpenSoundcardLibrary.load() else {
-      return nil
-    }
-
-    library = loadedLibrary
-    engine = library.create(64, 48_000, 48_000.0)
-    guard engine != nil else {
-      availabilityMessage = "Rust engine unavailable"
-      return nil
-    }
-
-    availabilityMessage = "Rust engine connected"
+  var statusAvailable: Bool {
+    FileManager.default.fileExists(atPath: statusURL.path)
   }
 
-  deinit {
-    library.destroy(engine)
-    engine = nil
+  var availabilityMessage: String {
+    statusAvailable ? "HAL bridge connected" : "HAL bridge unavailable"
   }
 
-  func setRunning(_ running: Bool) {
-    library.setRunning(engine, running)
+  func setDemoToneEnabled(_ enabled: Bool) {
+    let value = enabled ? "demo_tone_enabled=1\n" : "demo_tone_enabled=0\n"
+    do {
+      try value.write(to: controlURL, atomically: true, encoding: .utf8)
+    } catch {
+      // The manager must remain usable even if the HAL bridge is not writable.
+    }
   }
 
   func status() -> EngineStatus? {
-    guard engine != nil else {
+    guard OscStatusSnapshot.hasExpectedLayout,
+      let data = try? Data(contentsOf: statusURL),
+      data.count >= MemoryLayout<OscStatusSnapshot>.stride
+    else {
       return nil
     }
 
     var snapshot = OscStatusSnapshot()
-    withUnsafeMutablePointer(to: &snapshot) { pointer in
-      library.getStatus(engine, UnsafeMutableRawPointer(pointer))
+    _ = withUnsafeMutableBytes(of: &snapshot) { destination in
+      data.copyBytes(to: destination)
     }
-
-    return EngineStatus(
-      state: OscEngineState(rawValue: snapshot.state) ?? .error,
-      sampleRate: snapshot.sampleRate,
-      channelCount: snapshot.channelCount,
-      capacityFrames: snapshot.capacityFrames,
-      readIndex: snapshot.readIndex,
-      writeIndex: snapshot.writeIndex,
-      packetCount: snapshot.packetCount,
-      decodedFrameCount: snapshot.decodedFrameCount,
-      underrunCount: snapshot.underrunCount,
-      overrunCount: snapshot.overrunCount,
-      lastErrorCode: snapshot.lastErrorCode
-    )
-  }
-
-  func writeDemoTone(frames: Int) {
-    guard frames > 0, engine != nil else {
-      return
-    }
-
-    let channelCount = 64
-    let sampleRate = 48_000.0
-    let frequency = 440.0
-    let amplitude: Float = 0.16
-    var samples = Array(repeating: Float.zero, count: frames * channelCount)
-
-    for frame in 0..<frames {
-      let sample = sin(tonePhase) * Double(amplitude)
-      let offset = frame * channelCount
-      samples[offset] = Float(sample)
-      samples[offset + 1] = Float(sample)
-      tonePhase += 2.0 * Double.pi * frequency / sampleRate
-    }
-
-    tonePhase.formTruncatingRemainder(dividingBy: 2.0 * Double.pi)
-    samples.withUnsafeBufferPointer { buffer in
-      library.writeInterleaved(engine, buffer.baseAddress, UInt32(frames))
-    }
-  }
-}
-
-private final class OpenSoundcardLibrary {
-  typealias CreateFunction = @convention(c) (UInt32, UInt32, Double) -> UnsafeMutableRawPointer?
-  typealias DestroyFunction = @convention(c) (UnsafeMutableRawPointer?) -> Void
-  typealias GetStatusFunction =
-    @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Void
-  typealias SetRunningFunction = @convention(c) (UnsafeMutableRawPointer?, Bool) -> Void
-  typealias WriteInterleavedFunction =
-    @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<Float>?, UInt32) -> Void
-
-  private let handle: UnsafeMutableRawPointer
-  let create: CreateFunction
-  let destroy: DestroyFunction
-  let getStatus: GetStatusFunction
-  let setRunning: SetRunningFunction
-  let writeInterleaved: WriteInterleavedFunction
-
-  private init(
-    handle: UnsafeMutableRawPointer,
-    create: CreateFunction,
-    destroy: DestroyFunction,
-    getStatus: GetStatusFunction,
-    setRunning: SetRunningFunction,
-    writeInterleaved: WriteInterleavedFunction
-  ) {
-    self.handle = handle
-    self.create = create
-    self.destroy = destroy
-    self.getStatus = getStatus
-    self.setRunning = setRunning
-    self.writeInterleaved = writeInterleaved
-  }
-
-  deinit {
-    dlclose(handle)
-  }
-
-  static func load() -> OpenSoundcardLibrary? {
-    for path in candidateLibraryPaths() {
-      guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL) else {
-        continue
-      }
-
-      guard
-        let create: CreateFunction = symbol("osc_engine_create", in: handle),
-        let destroy: DestroyFunction = symbol("osc_engine_destroy", in: handle),
-        let getStatus: GetStatusFunction = symbol("osc_engine_get_status", in: handle),
-        let setRunning: SetRunningFunction = symbol("osc_engine_set_running", in: handle),
-        let writeInterleaved: WriteInterleavedFunction = symbol(
-          "osc_engine_write_interleaved", in: handle)
-      else {
-        dlclose(handle)
-        continue
-      }
-
-      return OpenSoundcardLibrary(
-        handle: handle,
-        create: create,
-        destroy: destroy,
-        getStatus: getStatus,
-        setRunning: setRunning,
-        writeInterleaved: writeInterleaved
-      )
-    }
-
-    return nil
-  }
-
-  private static func symbol<T>(_ name: String, in handle: UnsafeMutableRawPointer) -> T? {
-    guard let rawSymbol = dlsym(handle, name) else {
-      return nil
-    }
-
-    return unsafeBitCast(rawSymbol, to: T.self)
-  }
-
-  private static func candidateLibraryPaths() -> [String] {
-    let fileManager = FileManager.default
-    var paths: [String] = []
-
-    if let overridePath = ProcessInfo.processInfo.environment["OSC_ENGINE_DYLIB_PATH"],
-      !overridePath.isEmpty
-    {
-      paths.append(overridePath)
-    }
-
-    if let executableDirectory = Bundle.main.executableURL?.deletingLastPathComponent() {
-      paths.append(executableDirectory.appendingPathComponent("libopensoundcard_core.dylib").path)
-    }
-
-    if let resourceDirectory = Bundle.main.resourceURL {
-      paths.append(resourceDirectory.appendingPathComponent("libopensoundcard_core.dylib").path)
-    }
-
-    let currentDirectory = URL(fileURLWithPath: fileManager.currentDirectoryPath)
-    paths.append(
-      currentDirectory.appendingPathComponent("target/release/libopensoundcard_core.dylib").path)
-
-    var probeURL = currentDirectory
-    for _ in 0..<6 {
-      paths.append(
-        probeURL.appendingPathComponent("target/release/libopensoundcard_core.dylib").path)
-      probeURL.deleteLastPathComponent()
-    }
-
-    return Array(NSOrderedSet(array: paths)) as? [String] ?? paths
+    return snapshot.engineStatus
   }
 }

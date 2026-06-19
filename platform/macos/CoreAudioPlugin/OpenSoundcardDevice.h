@@ -15,6 +15,8 @@
 #define OPENSOUNDCARD_SAMPLE_RATE ((Float64)48000.0)
 #define OPENSOUNDCARD_ENGINE_CAPACITY_FRAMES ((UInt32)48000)
 #define OPENSOUNDCARD_ZERO_TIMESTAMP_PERIOD ((UInt32)16384)
+#define OPENSOUNDCARD_BRIDGE_CONTROL_PATH "/tmp/opensoundcard_manager_control"
+#define OPENSOUNDCARD_BRIDGE_STATUS_PATH "/tmp/opensoundcard_manager_status"
 
 bool OpenSoundcardDeviceInitialize(void);
 void OpenSoundcardDeviceDestroy(void);

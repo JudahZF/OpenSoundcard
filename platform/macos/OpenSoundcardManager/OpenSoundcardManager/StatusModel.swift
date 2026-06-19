@@ -20,17 +20,13 @@ final class StatusModel: ObservableObject {
   @Published private(set) var decodedFramesPerSecond: Double = 0
   @Published private(set) var demoToneEnabled = false
 
-  private let engine: OpenSoundcardEngine?
+  private let halBridge = OpenSoundcardHALBridge()
   private var pollTimer: Timer?
-  private var demoTimer: Timer?
   private var previousPacketCount: UInt64 = 0
   private var previousDecodedFrameCount: UInt64 = 0
   private var previousRateDate = Date()
-  private var localPacketCount: UInt64 = 0
-  private var localDecodedFrameCount: UInt64 = 0
 
   init() {
-    engine = OpenSoundcardEngine()
     refreshInstallState()
     poll()
     pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -42,15 +38,14 @@ final class StatusModel: ObservableObject {
 
   deinit {
     pollTimer?.invalidate()
-    demoTimer?.invalidate()
   }
 
   var ffiAvailability: String {
-    engine?.availabilityMessage ?? "Rust engine unavailable"
+    halBridge.availabilityMessage
   }
 
   var ffiTone: StatusTone {
-    engine == nil ? .warning : .good
+    halBridge.statusAvailable ? .good : .warning
   }
 
   var pluginStatus: String {
@@ -70,10 +65,6 @@ final class StatusModel: ObservableObject {
   }
 
   var captureState: String {
-    if demoToneEnabled {
-      return "Running"
-    }
-
     return status.state.displayName
   }
 
@@ -86,12 +77,12 @@ final class StatusModel: ObservableObject {
     case .error:
       .error
     case .stopped:
-      demoToneEnabled ? .good : .neutral
+      halBridge.statusAvailable ? .neutral : .warning
     }
   }
 
   var isRunning: Bool {
-    status.state == .running || status.state == .underrun || demoToneEnabled
+    status.state == .running || status.state == .underrun
   }
 
   var captureButtonTitle: String {
@@ -158,20 +149,15 @@ final class StatusModel: ObservableObject {
   }
 
   func startCapture() {
-    engine?.setRunning(true)
-    if engine == nil {
-      status.state = .running
+    selectedInterface = deviceLoaded ? "OpenSoundcard GigaACE" : "No interface selected"
+    if !deviceLoaded {
+      lastProbeError = "CoreAudio device unavailable"
     }
-    selectedInterface = "Awaiting GigaACE interface"
     poll()
   }
 
   func stopCapture() {
     stopDemoTone()
-    engine?.setRunning(false)
-    if engine == nil {
-      status.state = .stopped
-    }
     poll()
   }
 
@@ -217,51 +203,21 @@ final class StatusModel: ObservableObject {
 
   private func startDemoTone() {
     demoToneEnabled = true
-    startCapture()
-    demoTimer?.invalidate()
-    demoTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-      Task { @MainActor in
-        self?.writeDemoToneTick()
-      }
-    }
+    halBridge.setDemoToneEnabled(true)
+    selectedInterface = deviceLoaded ? "OpenSoundcard GigaACE demo tone" : "No interface selected"
+    poll()
   }
 
   private func stopDemoTone() {
     demoToneEnabled = false
-    demoTimer?.invalidate()
-    demoTimer = nil
-  }
-
-  private func writeDemoToneTick() {
-    let framesPerTick = 2_400
-    engine?.writeDemoTone(frames: framesPerTick)
-    if engine == nil {
-      localPacketCount += 1
-      localDecodedFrameCount += UInt64(framesPerTick)
-    }
+    halBridge.setDemoToneEnabled(false)
     poll()
   }
 
   private func poll() {
     refreshInstallState()
 
-    if let engineStatus = engine?.status() {
-      status = engineStatus
-    } else {
-      status = EngineStatus(
-        state: status.state,
-        sampleRate: 48_000,
-        channelCount: 64,
-        capacityFrames: 48_000,
-        readIndex: status.readIndex,
-        writeIndex: localDecodedFrameCount,
-        packetCount: localPacketCount,
-        decodedFrameCount: localDecodedFrameCount,
-        underrunCount: status.underrunCount,
-        overrunCount: status.overrunCount,
-        lastErrorCode: 0
-      )
-    }
+    status = halBridge.status() ?? .empty
 
     updateRates()
   }
@@ -273,8 +229,17 @@ final class StatusModel: ObservableObject {
       return
     }
 
-    packetsPerSecond = Double(status.packetCount - previousPacketCount) / elapsed
-    decodedFramesPerSecond = Double(status.decodedFrameCount - previousDecodedFrameCount) / elapsed
+    let packetDelta =
+      status.packetCount >= previousPacketCount
+      ? status.packetCount - previousPacketCount
+      : 0
+    let frameDelta =
+      status.decodedFrameCount >= previousDecodedFrameCount
+      ? status.decodedFrameCount - previousDecodedFrameCount
+      : 0
+
+    packetsPerSecond = Double(packetDelta) / elapsed
+    decodedFramesPerSecond = Double(frameDelta) / elapsed
     previousPacketCount = status.packetCount
     previousDecodedFrameCount = status.decodedFrameCount
     previousRateDate = now

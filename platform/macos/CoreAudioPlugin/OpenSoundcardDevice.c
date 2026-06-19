@@ -7,23 +7,34 @@
 #include <mach/mach_time.h>
 #include <math.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <string.h>
 
 typedef struct OpenSoundcardDeviceState {
   void *engine;
   atomic_uint running_client_count;
+  atomic_bool demo_tone_enabled;
   UInt64 host_time_anchor;
   Float64 host_ticks_per_frame;
   UInt64 clock_seed;
+  Float64 demo_tone_phase;
+  UInt64 bridge_packet_count;
+  UInt64 bridge_decoded_frame_count;
+  UInt64 bridge_frame_index;
   bool initialized;
 } OpenSoundcardDeviceState;
 
 static OpenSoundcardDeviceState g_device = {
     .engine = NULL,
     .running_client_count = 0,
+    .demo_tone_enabled = false,
     .host_time_anchor = 0,
     .host_ticks_per_frame = 0.0,
     .clock_seed = 1,
+    .demo_tone_phase = 0.0,
+    .bridge_packet_count = 0,
+    .bridge_decoded_frame_count = 0,
+    .bridge_frame_index = 0,
     .initialized = false,
 };
 
@@ -264,6 +275,98 @@ static UInt32 OpenSoundcardDeviceRunning(void) {
              : 0;
 }
 
+static bool OpenSoundcardReadDemoToneControl(void) {
+  FILE *file = fopen(OPENSOUNDCARD_BRIDGE_CONTROL_PATH, "rb");
+  if (file == NULL) {
+    return false;
+  }
+
+  char buffer[64];
+  const size_t bytes_read = fread(buffer, 1, sizeof(buffer), file);
+  fclose(file);
+
+  for (size_t index = 0; index < bytes_read; index += 1) {
+    if (buffer[index] == '1') {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+static bool OpenSoundcardDemoToneEnabled(void) {
+  const bool enabled = OpenSoundcardReadDemoToneControl();
+  atomic_store_explicit(&g_device.demo_tone_enabled, enabled,
+                        memory_order_relaxed);
+  return enabled;
+}
+
+static void OpenSoundcardPublishStatus(void) {
+  OscStatusSnapshot snapshot;
+  if (g_device.engine != NULL) {
+    osc_engine_get_status(g_device.engine, &snapshot);
+  } else {
+    memset(&snapshot, 0, sizeof(snapshot));
+  }
+
+  snapshot.sample_rate = OPENSOUNDCARD_SAMPLE_RATE;
+  snapshot.channel_count = OPENSOUNDCARD_CHANNEL_COUNT;
+  snapshot.capacity_frames = OPENSOUNDCARD_ENGINE_CAPACITY_FRAMES;
+
+  const bool running = OpenSoundcardDeviceRunning() != 0;
+  const bool demo_tone_enabled = atomic_load_explicit(
+      &g_device.demo_tone_enabled, memory_order_relaxed);
+
+  if (demo_tone_enabled) {
+    snapshot.state = running ? Running : Stopped;
+    snapshot.read_index = g_device.bridge_frame_index;
+    snapshot.write_index = g_device.bridge_frame_index;
+    snapshot.packet_count = g_device.bridge_packet_count;
+    snapshot.decoded_frame_count = g_device.bridge_decoded_frame_count;
+    snapshot.last_error_code = 0;
+  } else if (!running) {
+    snapshot.state = Stopped;
+  }
+
+  FILE *file = fopen(OPENSOUNDCARD_BRIDGE_STATUS_PATH, "wb");
+  if (file == NULL) {
+    return;
+  }
+
+  (void)fwrite(&snapshot, sizeof(snapshot), 1, file);
+  fclose(file);
+}
+
+static void OpenSoundcardFillDemoTone(Float32 *output, UInt32 frame_count) {
+  const size_t sample_count =
+      (size_t)frame_count * (size_t)OPENSOUNDCARD_CHANNEL_COUNT;
+  memset(output, 0, sample_count * sizeof(Float32));
+
+  const Float64 amplitude = 0.16;
+  const Float64 frequency = 440.0;
+  const Float64 phase_step =
+      (2.0 * M_PI * frequency) / OPENSOUNDCARD_SAMPLE_RATE;
+  Float64 phase = g_device.demo_tone_phase;
+
+  for (UInt32 frame = 0; frame < frame_count; frame += 1) {
+    const Float32 sample = (Float32)(sin(phase) * amplitude);
+    const size_t offset = (size_t)frame * (size_t)OPENSOUNDCARD_CHANNEL_COUNT;
+    output[offset] = sample;
+    output[offset + 1] = sample;
+
+    phase += phase_step;
+    if (phase >= 2.0 * M_PI) {
+      phase -= 2.0 * M_PI;
+    }
+  }
+
+  g_device.demo_tone_phase = phase;
+  g_device.bridge_packet_count += 1;
+  g_device.bridge_decoded_frame_count += frame_count;
+  g_device.bridge_frame_index += frame_count;
+  OpenSoundcardPublishStatus();
+}
+
 bool OpenSoundcardDeviceInitialize(void) {
   if (g_device.initialized) {
     return true;
@@ -278,10 +381,17 @@ bool OpenSoundcardDeviceInitialize(void) {
 
   atomic_store_explicit(&g_device.running_client_count, 0,
                         memory_order_relaxed);
+  atomic_store_explicit(&g_device.demo_tone_enabled, false,
+                        memory_order_relaxed);
   g_device.host_time_anchor = mach_absolute_time();
   g_device.host_ticks_per_frame = OpenSoundcardHostTicksPerFrame();
   g_device.clock_seed = 1;
+  g_device.demo_tone_phase = 0.0;
+  g_device.bridge_packet_count = 0;
+  g_device.bridge_decoded_frame_count = 0;
+  g_device.bridge_frame_index = 0;
   g_device.initialized = true;
+  OpenSoundcardPublishStatus();
   return true;
 }
 
@@ -291,7 +401,12 @@ void OpenSoundcardDeviceDestroy(void) {
     g_device.engine = NULL;
   }
 
+  atomic_store_explicit(&g_device.running_client_count, 0,
+                        memory_order_relaxed);
+  atomic_store_explicit(&g_device.demo_tone_enabled, false,
+                        memory_order_relaxed);
   g_device.initialized = false;
+  OpenSoundcardPublishStatus();
 }
 
 Boolean
@@ -672,6 +787,7 @@ OSStatus OpenSoundcardDeviceStartIO(AudioObjectID device_object_id,
   if (previous == 0) {
     g_device.clock_seed += 1;
     osc_engine_set_running(g_device.engine, true);
+    OpenSoundcardPublishStatus();
   }
 
   return kAudioHardwareNoError;
@@ -695,6 +811,7 @@ OSStatus OpenSoundcardDeviceStopIO(AudioObjectID device_object_id,
                                                  1, memory_order_relaxed);
   if (prior == 1) {
     osc_engine_set_running(g_device.engine, false);
+    OpenSoundcardPublishStatus();
   }
 
   return kAudioHardwareNoError;
@@ -786,10 +903,17 @@ OSStatus OpenSoundcardDeviceDoIOOperation(AudioObjectID device_object_id,
   const size_t sample_count =
       (size_t)io_buffer_frame_size * (size_t)OPENSOUNDCARD_CHANNEL_COUNT;
   Float32 *output = (Float32 *)io_main_buffer;
+  const bool demo_tone_enabled = OpenSoundcardDemoToneEnabled();
 
   if (!g_device.initialized || g_device.engine == NULL ||
       OpenSoundcardDeviceRunning() == 0) {
     memset(output, 0, sample_count * sizeof(Float32));
+    OpenSoundcardPublishStatus();
+    return kAudioHardwareNoError;
+  }
+
+  if (demo_tone_enabled) {
+    OpenSoundcardFillDemoTone(output, io_buffer_frame_size);
     return kAudioHardwareNoError;
   }
 
@@ -803,6 +927,7 @@ OSStatus OpenSoundcardDeviceDoIOOperation(AudioObjectID device_object_id,
     memset(silence_start, 0, silence_count * sizeof(Float32));
   }
 
+  OpenSoundcardPublishStatus();
   return kAudioHardwareNoError;
 }
 

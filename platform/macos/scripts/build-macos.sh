@@ -121,6 +121,7 @@ build_coreaudio_bundle() {
 
 build_manager_app_if_present() {
 	local project
+	local scheme
 	project="$(command find "$REPO_ROOT/platform/macos" \
 		-maxdepth 4 \
 		-name "*.xcodeproj" \
@@ -132,10 +133,12 @@ build_manager_app_if_present() {
 		return 0
 	fi
 
+	scheme="${OSC_MANAGER_SCHEME:-$(basename "$project" .xcodeproj)}"
 	require_command xcodebuild
 	echo "Building manager app from Xcode project: $project"
 	xcodebuild \
 		-project "$project" \
+		-scheme "$scheme" \
 		-configuration Release \
 		-derivedDataPath "$BUILD_ROOT/DerivedData" \
 		build
