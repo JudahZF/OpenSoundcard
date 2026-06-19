@@ -26,6 +26,8 @@
             rust-cbindgen
             rustc
             rustfmt
+            shellcheck
+            shfmt
             tea
           ];
         };
