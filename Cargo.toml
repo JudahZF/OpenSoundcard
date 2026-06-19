@@ -1,0 +1,11 @@
+[workspace]
+members = [
+  "crates/opensoundcard-core",
+  "crates/opensoundcard-gigace",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://codeberg.org/JudahZF/OpenSoundcard"

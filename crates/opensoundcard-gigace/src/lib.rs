@@ -1,0 +1,1 @@
+//! GigaACE-specific OpenSoundcard integration.
