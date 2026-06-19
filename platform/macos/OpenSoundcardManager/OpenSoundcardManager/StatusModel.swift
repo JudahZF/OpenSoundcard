@@ -1,11 +1,12 @@
 import AppKit
-import CoreAudio
 import Foundation
+import UniformTypeIdentifiers
 
 @MainActor
 final class StatusModel: ObservableObject {
   @Published private(set) var pluginInstalled = false
   @Published private(set) var deviceLoaded = false
+  @Published private(set) var installState = DeviceInstallState.empty
   @Published private(set) var captureInterfaces: [CaptureInterface] = []
   @Published private(set) var selectedInterfaceID = ""
   @Published private(set) var selectedInterface = "No interface selected"
@@ -21,10 +22,13 @@ final class StatusModel: ObservableObject {
   @Published private(set) var packetsPerSecond: Double = 0
   @Published private(set) var decodedFramesPerSecond: Double = 0
   @Published private(set) var demoToneEnabled = false
+  @Published private(set) var diagnosticsExportStatus = "Not exported"
+  @Published var abletonValidationNotes = ""
   @Published var selectedStageboxVariantID: UInt8 = 0
   @Published var probeDurationSeconds: Double = 10
 
   private let halBridge = OpenSoundcardHALBridge()
+  private let deviceInstallController = DeviceInstallController()
   private let captureController = CaptureController()
   private let stageboxController = StageboxIdentityController()
   private var captureSnapshot = CaptureControllerSnapshot()
@@ -58,11 +62,31 @@ final class StatusModel: ObservableObject {
   }
 
   var pluginStatus: String {
-    pluginInstalled ? "Installed" : "Not installed"
+    installState.pluginStatusText
   }
 
   var deviceStatus: String {
-    deviceLoaded ? "Loaded" : "Missing"
+    installState.deviceStatusText
+  }
+
+  var pluginPathText: String {
+    installState.installedPathText
+  }
+
+  var pluginVersionText: String {
+    installState.installedVersionText
+  }
+
+  var pluginVersionMatchText: String {
+    installState.versionMatchText
+  }
+
+  var installRestartSuggestion: String? {
+    installState.restartRecommendation
+  }
+
+  var installScriptPaths: [InstallScriptPath] {
+    installState.scriptPaths
   }
 
   var sampleRateText: String {
@@ -287,25 +311,57 @@ final class StatusModel: ObservableObject {
   }
 
   func showInstallInstructions() {
-    let scriptURL = repositoryRoot()
+    let scriptURL = installState.scriptPath(for: "Install script") ?? repositoryRoot()
       .appendingPathComponent("platform/macos/scripts/install-plugin.sh")
-    safetyWarning = "Run install-plugin.sh from a trusted checkout, then restart CoreAudio"
+    safetyWarning = "Run install-plugin.sh from a trusted checkout, then restart CoreAudio."
     NSWorkspace.shared.activateFileViewerSelecting([scriptURL])
   }
 
   func exportDiagnostics() {
-    let formatter = ISO8601DateFormatter()
-    let timestamp = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
-    let outputURL = FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent("Desktop")
-      .appendingPathComponent("OpenSoundcardDiagnostics-\(timestamp).txt")
+    let generatedAt = Date()
+    let savePanel = NSSavePanel()
+    savePanel.allowedContentTypes = [.plainText]
+    savePanel.canCreateDirectories = true
+    savePanel.isExtensionHidden = false
+    savePanel.nameFieldStringValue = DiagnosticsExporter.defaultFilename(generatedAt: generatedAt)
+    savePanel.title = "Export OpenSoundcard Diagnostics"
 
-    let report = diagnosticsReport()
-    do {
-      try report.write(to: outputURL, atomically: true, encoding: .utf8)
-      NSWorkspace.shared.activateFileViewerSelecting([outputURL])
-    } catch {
-      lastProbeError = "Diagnostics export failed: \(error.localizedDescription)"
+    savePanel.begin { [weak self] response in
+      Task { @MainActor in
+        guard let self else {
+          return
+        }
+
+        guard response == .OK, let outputURL = savePanel.url else {
+          self.diagnosticsExportStatus = "Export cancelled"
+          return
+        }
+
+        self.diagnosticsExportStatus = "Collecting diagnostics..."
+        let snapshotBase = self.diagnosticsSnapshot(generatedAt: generatedAt, logLines: [])
+
+        DispatchQueue.global(qos: .userInitiated).async {
+          var snapshot = snapshotBase
+          snapshot.logLines = DiagnosticsExporter.collectLastLogLines(limit: 200)
+
+          do {
+            try DiagnosticsExporter.write(snapshot, to: outputURL)
+            DispatchQueue.main.async {
+              Task { @MainActor in
+                self.diagnosticsExportStatus = "Exported \(outputURL.lastPathComponent)"
+                NSWorkspace.shared.activateFileViewerSelecting([outputURL])
+              }
+            }
+          } catch {
+            DispatchQueue.main.async {
+              Task { @MainActor in
+                self.diagnosticsExportStatus =
+                  "Diagnostics export failed: \(error.localizedDescription)"
+              }
+            }
+          }
+        }
+      }
     }
   }
 
@@ -395,120 +451,55 @@ final class StatusModel: ObservableObject {
   }
 
   private func refreshInstallState() {
-    let fileManager = FileManager.default
-    let systemPlugin = "/Library/Audio/Plug-Ins/HAL/OpenSoundcard.driver"
-    let userPlugin = fileManager.homeDirectoryForCurrentUser
-      .appendingPathComponent("Library/Audio/Plug-Ins/HAL/OpenSoundcard.driver")
-      .path
-    pluginInstalled =
-      fileManager.fileExists(atPath: systemPlugin) || fileManager.fileExists(atPath: userPlugin)
-    deviceLoaded = isOpenSoundcardDeviceLoaded()
-  }
-
-  private func isOpenSoundcardDeviceLoaded() -> Bool {
-    var address = AudioObjectPropertyAddress(
-      mSelector: kAudioHardwarePropertyDevices,
-      mScope: kAudioObjectPropertyScopeGlobal,
-      mElement: kAudioObjectPropertyElementMain
+    installState = deviceInstallController.inspect(
+      repositoryRoot: repositoryRoot(),
+      expectedVersion: appVersion
     )
-    var dataSize: UInt32 = 0
-
-    guard
-      AudioObjectGetPropertyDataSize(
-        AudioObjectID(kAudioObjectSystemObject),
-        &address,
-        0,
-        nil,
-        &dataSize
-      ) == noErr,
-      dataSize > 0
-    else {
-      return false
-    }
-
-    let deviceCount = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
-    var devices = Array(repeating: AudioDeviceID(0), count: deviceCount)
-    guard
-      AudioObjectGetPropertyData(
-        AudioObjectID(kAudioObjectSystemObject),
-        &address,
-        0,
-        nil,
-        &dataSize,
-        &devices
-      ) == noErr
-    else {
-      return false
-    }
-
-    return devices.contains { deviceID in
-      coreAudioDeviceName(deviceID) == "OpenSoundcard GigaACE"
-    }
+    pluginInstalled = installState.pluginInstalled
+    deviceLoaded = installState.deviceVisible
   }
 
-  private func coreAudioDeviceName(_ deviceID: AudioDeviceID) -> String? {
-    var address = AudioObjectPropertyAddress(
-      mSelector: kAudioObjectPropertyName,
-      mScope: kAudioObjectPropertyScopeGlobal,
-      mElement: kAudioObjectPropertyElementMain
+  private var appVersion: String {
+    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+      ?? "0.1.0"
+  }
+
+  private func diagnosticsSnapshot(generatedAt: Date, logLines: [String]) -> DiagnosticsSnapshot {
+    DiagnosticsSnapshot(
+      generatedAt: generatedAt,
+      macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+      appVersion: appVersion,
+      installState: installState,
+      abletonValidationNotes: abletonValidationNotes,
+      selectedNetworkInterface: selectedInterface,
+      streamStatus: [
+        "FFI: \(ffiAvailability)",
+        "Capture state: \(captureState)",
+        "Sample rate: \(sampleRateText)",
+        "Channels: \(channelsText)",
+        "Packets/sec: \(packetsPerSecondText)",
+        "Decoded frames/sec: \(decodedFramesPerSecondText)",
+        "Buffer fill estimate: \(fillEstimateText)",
+        "Read index: \(readIndexText)",
+        "Write index: \(writeIndexText)",
+        "Underruns: \(underrunsText)",
+        "Overruns: \(overrunsText)",
+        "Last error: \(lastErrorText)",
+      ],
+      stageboxIdentification: [
+        "Identification: \(stageboxIdentification)",
+        "Active variant: \(activeVariant)",
+        "Probe remaining: \(probeRemainingText)",
+        "Transmitted frames: \(transmittedFramesText)",
+        "Console response frames: \(consoleResponseFramesText)",
+        "Last console MAC: \(lastConsoleMAC)",
+        "Allen & Heath OUI detected: \(allenHeathOUIDetectedText)",
+        "Last response age: \(lastResponseAgeText)",
+        "Last probe error: \(lastProbeError)",
+        "Safety warning: \(safetyWarning)",
+      ],
+      logLines: logLines
     )
-    var name: CFString = "" as CFString
-    var dataSize = UInt32(MemoryLayout<CFString>.size)
-    let status = withUnsafeMutablePointer(to: &name) { namePointer in
-      AudioObjectGetPropertyData(
-        deviceID,
-        &address,
-        0,
-        nil,
-        &dataSize,
-        namePointer
-      )
-    }
-
-    guard status == noErr else {
-      return nil
-    }
-
-    return name as String
-  }
-
-  private func diagnosticsReport() -> String {
-    """
-    OpenSoundcard Diagnostics
-    Generated: \(Date())
-
-    Device
-    CoreAudio Plug-in: \(pluginStatus)
-    CoreAudio Device: \(deviceStatus)
-    Sample Rate: \(sampleRateText)
-    Channels: \(channelsText)
-
-    Capture
-    Interface: \(selectedInterface)
-    State: \(captureState)
-    Packets/sec: \(packetsPerSecondText)
-    Decoded frames/sec: \(decodedFramesPerSecondText)
-    Last error: \(lastErrorText)
-
-    Stagebox / Console
-    Identification: \(stageboxIdentification)
-    Active variant: \(activeVariant)
-    Console response frames: \(consoleResponseFramesText)
-    Last console MAC: \(lastConsoleMAC)
-    Allen & Heath OUI detected: \(allenHeathOUIDetectedText)
-    Last response age: \(lastResponseAgeText)
-    Last probe error: \(lastProbeError)
-    Safety warning: \(safetyWarning)
-
-    Buffer
-    Fill estimate: \(fillEstimateText)
-    Read index: \(readIndexText)
-    Write index: \(writeIndexText)
-    Underruns: \(underrunsText)
-    Overruns: \(overrunsText)
-
-    FFI: \(ffiAvailability)
-    """
   }
 
   private func repositoryRoot() -> URL {

@@ -14,6 +14,7 @@ struct ContentView: View {
           StageboxSection()
           BufferSection()
           ControlsSection()
+          DiagnosticsSection()
         }
       }
       .padding(24)
@@ -81,7 +82,16 @@ private struct DeviceSection: View {
   var body: some View {
     PanelSection(title: "Device") {
       StatusRow(label: "CoreAudio Plug-in", value: statusModel.pluginStatus)
+      StatusRow(label: "Plug-in Path", value: statusModel.pluginPathText)
+      StatusRow(label: "Plug-in Version", value: statusModel.pluginVersionText)
+      StatusRow(label: "Version Match", value: statusModel.pluginVersionMatchText)
       StatusRow(label: "CoreAudio Device", value: statusModel.deviceStatus)
+      if let restartSuggestion = statusModel.installRestartSuggestion {
+        StatusRow(label: "Restart Suggestion", value: restartSuggestion)
+      }
+      ForEach(statusModel.installScriptPaths) { scriptPath in
+        StatusRow(label: scriptPath.label, value: scriptPath.url.path)
+      }
       StatusRow(label: "Sample Rate", value: statusModel.sampleRateText)
       StatusRow(label: "Channels", value: statusModel.channelsText)
     }
@@ -218,6 +228,28 @@ private struct ControlsSection: View {
   }
 }
 
+private struct DiagnosticsSection: View {
+  @EnvironmentObject private var statusModel: StatusModel
+
+  var body: some View {
+    PanelSection(title: "Diagnostics") {
+      VStack(alignment: .leading, spacing: 6) {
+        Text("Ableton validation notes")
+          .font(.system(size: 12, weight: .medium))
+          .foregroundStyle(.secondary)
+        TextEditor(text: $statusModel.abletonValidationNotes)
+          .font(.system(size: 13))
+          .frame(minHeight: 76)
+          .overlay {
+            RoundedRectangle(cornerRadius: 6)
+              .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+          }
+      }
+      StatusRow(label: "Export Status", value: statusModel.diagnosticsExportStatus)
+    }
+  }
+}
+
 private struct PanelSection<Content: View>: View {
   let title: String
   @ViewBuilder let content: Content
@@ -248,7 +280,7 @@ private struct StatusRow: View {
       Text(value)
         .fontWeight(.medium)
         .textSelection(.enabled)
-        .lineLimit(2)
+        .lineLimit(nil)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
     .font(.system(size: 13))
